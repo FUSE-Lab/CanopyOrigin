@@ -16,20 +16,20 @@ setwd("D:/Dropbox/Forest Composition/composition/Maps/shapefiles/Origin")
 
 census <- read.csv('1940/1940Tract.csv') %>%
   
-  rename(White1940 = `BUQ001`, #rename variables to something meaningful
-         NotWhite1940 = `BUQ002`,
-         MedianHomeValue1940 =`BVC001`) %>% 
+  rename(White40T = `BUQ001`, #rename variables to something meaningful
+         NotWhite40T = `BUQ002`,
+         MedianHomeValue40T =`BVC001`) %>% 
   
-  mutate( NoSchool1940 = (`BUH001`+ `BUH010`), #Combine schooling categories. They were previously separated by gender and lots of buckets.
-          NoHighSchool1940 = (`BUH002`+ `BUH003`+`BUH004`+ `BUH011` + `BUH012`+ `BUH013`),
-          HighSchool1940 = (`BUH005` + `BUH006`+ `BUH014`+ `BUH015`),
-          College1940 = (`BUH007` + `BUH008`+ `BUH016` + `BUH017`)) %>%
+  mutate( NoSchool40T = (`BUH001`+ `BUH010`), #Combine schooling categories. They were previously separated by gender and lots of buckets.
+          NoHighSchool40T = (`BUH002`+ `BUH003`+`BUH004`+ `BUH011` + `BUH012`+ `BUH013`),
+          HighSchool40T = (`BUH005` + `BUH006`+ `BUH014`+ `BUH015`),
+          College40T = (`BUH007` + `BUH008`+ `BUH016` + `BUH017`)) %>%
   
-  dplyr::select(White1940, #Drop the unneeded columns
-                NotWhite1940,
-                MedianHomeValue1940,
-                NoSchool1940,
-                NoHighSchool1940,
-                HighSchool1940,
-                College1940)
+  dplyr::select(White40T, #Drop the unneeded columns
+                NotWhite40T,
+                MedianHomeValue40T,
+                NoSchool40T,
+                NoHighSchool40T,
+                HighSchool40T,
+                College40T)
 head(census)
