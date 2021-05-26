@@ -14,7 +14,15 @@ setwd("D:/Dropbox/Forest Composition/composition/Maps/shapefiles/Origin")
 
 #Load tract race, education, and housing value data.
 
-census <- read.csv('1940/1940County.csv') %>%
+census1 <- read.csv('1940/1940County.csv')
+
+censusAll <- left_join(census1, census2, by = "GISJOIN") %>% #If we want to add more variables they can be joined here
+  left_join(., census3, by ='GISJOIN') %>%
+  left_join(., census4, by ='GISJOIN') %>%
+  filter(STATE.x == 'Illinois',
+         COUNTY.x %in% tc)
+
+censusAll %<>%
   
   rename(White40C = `AF15001`, #rename variables to something meaningful
          NotWhite40C = `AF15002`,

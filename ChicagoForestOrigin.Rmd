@@ -1,0 +1,1039 @@
+---
+title: "ChicagoForestOrigin"
+author: "Lindsay Darling"
+date: "3/31/2021"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "D:/Dropbox/Forest Composition/composition/Maps/shapefiles/Origin")
+```
+
+## Libraries
+Load in useful libraries
+
+```{r, echo=FALSE}
+
+library(plyr)
+library(tidyverse)
+library(magrittr)      #For piping
+library(ggplot2)       #Pretty figures
+library(ggthemes)      #More image prettiness
+library(sf)            #Spatial data
+library(tidycensus)    #Pull census data
+library(raster)        #Spatial raster datasets
+library(exactextractr) #clip polygons
+library(ggmap)         #Visualize maps
+library(scales)        #Change scales on figures
+library(psych)         #Fancier pairs panel
+library(ggpubr)        #Change axes on figures
+library(vioplot)       #Violin plots
+library(glmnet)        #For lasso and ridge
+library(gam)           #GAM models
+library(randomForest)  #Random forests
+library(rpart)         #For regression trees
+library(rpart.plot)    #For pretty regression trees
+library(units)         #Change units in spatial work
+library(plotmo)        #Create prettier qqnorm plots
+library(pdp)           #Partial dependence plots
+library(vip)           #Variable importance plots
+library(lattice)       #Side by side plots in ggplot
+library(e1071)         #SVM
+
+```
+The opening section of this code pulls census data and aggregates forest data to the census tract scale. These sections can be skipped, as the completed dataset is pulled in at the data exploration phase.
+
+
+## 2010 census
+Pull census data. Note, you will need to provide and API key. I have removed mine from this document.
+```{r, message=FALSE}
+# Put your key in the quotes and run so it doesn't have to be specified with each api call 
+#The line to get the key is commented out to avoid an error.
+
+#census_api_key(key = "API key here", install=T, overwrite = TRUE)
+
+# Set up variable, scale and year choices
+
+geom <- 'tract'
+YR <- 2015
+ST <- c('IL')
+CNTY <- c('Cook', 'Dupage', 'Kane', 'Kendall', 'Lake', 'McHenry', 'Will County')
+vars <- c('B19013_001', 'B25001_001', 'B25035_001','B25003A_002', 'B25003A_003', 
+          'B15003_022', 'B02001_002', 'B02001_003', 'B02001_005', 'B02001_007', 
+          'B23025_005', 'B23024_002', 'B01003_001', 'B25064_001', 'B01002_001')
+
+#Use tidycensus to get data
+
+census<- get_acs(geography = geom,
+               variables = vars,
+               state = ST,
+               county = CNTY,
+               year = YR,
+               output = 'wide',
+               geometry = TRUE)%>% #That pulls in tigerlines
+  sf::st_transform(., crs = 5070) #Change to albers equal conic
+
+census$AreaHa <-st_area(census) %>% #Add area and covert until to ha
+  units::set_units(value = ha)
+```
+
+##Variable clean up
+
+Finally, we'll rename the variables, remove the not useful ones, and preform some calculations to get density and percent variables.
+
+```{r}
+
+#Rename, select, and modify variables
+
+census %<>%
+  dplyr::rename(FIPS = `GEOID`,
+         Wht_pop = `B02001_002E`,
+         Blk_pop = `B02001_003E`,
+         Asn_pop = `B02001_005E`,
+         Other_pop = `B02001_007E`,
+         College_ed = `B15003_022E`,
+         Med_ncm = `B19013_001E`,
+         Below_poverty = `B23024_002E`,
+         Unemployed_pop = `B23025_005E`,
+         Housing_unit = `B25001_001E`,
+         Owner_house = `B25003A_002E`,
+         Renter_house = `B25003A_003E`,
+         House_age = `B25035_001E`,
+         Med_rent = `B25064_001E`,
+         Tot_pop = `B01003_001E`) %>% 
+  dplyr::select(FIPS,
+         Wht_pop,
+         Blk_pop,
+         Asn_pop,
+         Other_pop,
+         College_ed,
+         Med_ncm,
+         Below_poverty,
+         Unemployed_pop,
+         Housing_unit,
+         Owner_house,
+         Renter_house,
+         House_age,
+         Med_rent,
+         Tot_pop,
+         AreaHa) %>% 
+  mutate(Med_ncm = ifelse(is.na(Med_ncm), 0, Med_ncm)) %>% #Change NA income to zeros
+  mutate(WhtPopP = (Wht_pop/Tot_pop), #Change some variables to density
+         BlkPopP = (Blk_pop/Tot_pop),
+         AsnPopP = (Asn_pop/Tot_pop),
+         OthPopP = (Other_pop/Tot_pop),
+         UnivP = (College_ed/Tot_pop),
+         PovP = (Below_poverty/Tot_pop),
+         UnplydP = (Unemployed_pop/Tot_pop),
+         HouseD = (Housing_unit/AreaHa),
+         OwnerP = (Owner_house/Housing_unit),
+         RenterP = (Renter_house/Housing_unit),
+         TotPopD = (Tot_pop/AreaHa),
+         HouseD = (Housing_unit/AreaHa)) %>% 
+  dplyr::select(-Wht_pop,-Blk_pop,-Asn_pop, #Drop some things that we don't need.
+                -Other_pop,-College_ed,-Below_poverty,-Unemployed_pop,
+                -Housing_unit,-Owner_house,-Renter_house,-Tot_pop)
+
+
+#Write it up. I've commented this out since I don't want to overwrite again.
+# st_write(census, file.path('2015/2015Clean.shp'), 
+#    driver = 'ESRI Shapefile', overwrite = TRUE)
+
+```
+
+## 2010 canopy
+
+Join 2010 canopy percentage to census data
+
+```{r}
+#Load data
+
+census <- st_read('2015/2015Clean.shp') # Cleaned 2015 census data
+canopy <- st_read('2015/2010CanopyTract.shp') %>%  # Land cover by tract
+  st_drop_geometry() #drop geometry so join works
+
+
+## Join them
+
+census_canopy <- left_join(census, canopy,by = 'FIPS') %>% 
+  dplyr::rename(PCan2010 = `PERCENT_CA`) %>%  #Give it a better name
+  mutate(PCan2010 = `PCan2010`/100)#Change to decimal to match other percentages
+
+```
+
+## Incorporated tracts
+
+Calculate percent incorporated. We will be focusing on census tracts that are in developed areas (not agricultural places). This field will allow us to filter out those tracts.
+
+``` {r}
+
+#Municipal boundaries I'm commenting this out so that it can be pulled from the 
+#hard drive.
+
+#  censusMuni<- get_acs(geography = 'place',
+#                   variables = 'B01003_001',
+#                   state = ST,
+#                   #county = CNTY,
+#                   year = YR,
+#                   output = 'wide',
+#                   geometry = TRUE)%>% #That pulls in tigerlines
+#    sf::st_transform(., crs = 5070) %>% #Change to albers equal conic
+#    dplyr::select(GEOID)
+# 
+# st_write(censusMuni, '2015/MuniBoundaries1.shp', driver = 
+# 
+#'ESRI Shapefile', overwrite = TRUE)
+
+censusMuni<-st_read('2015/MuniBoundaries1.shp')
+
+# Calculate area and tidy up
+intersect_area <- st_intersection(census_canopy, censusMuni) %>% 
+   # create new column with shape area
+  mutate(intersect_area = st_area(.)) %>%   
+  # only select columns needed to merge
+  dplyr::select(FIPS, intersect_area, AreaHa) %>%
+   mutate(intArea = as.numeric(intersect_area)) %>%  
+   # drop geometry as we don't need it
+   st_drop_geometry() %>%   
+   #Dissolve tracts that cover several munis into single value with added areas
+   group_by(FIPS) %>% 
+   summarize(muniArea=sum(intArea))
+
+# Merge by FIPS
+census_canopy_incorp<- census_canopy %>% 
+  left_join(.,intersect_area, by = 'FIPS') %>% 
+  mutate(pctIncorp = muniArea/(AreaHa*10000)) %>% 
+  dplyr::select(-muniArea) #Drop municipal area
+
+```
+
+## Forested areas 
+
+Now let's calculate the percent of each tract that was forested in 1840 and 1940.
+
+```{r}
+
+#load presettlement forests
+
+preset<-st_read('PresetForests.shp') %>% 
+  sf::st_transform(., crs = 5070) %>%  #Change to albers equal conic
+  st_make_valid(.) #Fix a topology error
+
+#Intersect with forests and calculate area of intersected areas
+
+intersect_pct <- st_intersection(census_canopy_incorp, preset) %>% 
+   mutate(intersect_area = st_area(.)) %>%   # create new column with shape area
+   dplyr::select(FIPS, intersect_area) %>%   # only select columns needed to merge
+   mutate(intArea = as.numeric(intersect_area)) %>%  
+   st_drop_geometry() %>%   # drop geometry as we don't need it
+   group_by(FIPS) %>% #Dissolve tracts that cover several munis into single value with added areas
+   summarize(presetArea=sum(intArea))
+  
+
+# Merge by FIPS
+census_canopy_incorp_preset<- census_canopy_incorp %>% left_join(.,intersect_pct, by = 'FIPS') %>% 
+  mutate(presetPrct = presetArea/(AreaHa*10000)) %>% 
+  dplyr::select(-presetArea) %>% #Drop preset area
+  mutate(presetPrct=replace_na(presetPrct,0)) #turn NA into zero
+
+##Repeat with 1940s forests
+#load 1940 forests
+
+Midcen<-st_read('1940Forest.shp') %>% 
+  sf::st_transform(., crs = 5070) %>%  #Change to albers equal conic
+  st_make_valid(.) #Fix a topology error
+
+#Intersect with forests and calculate area of intersected areas
+
+intersect_pct <- st_intersection(census_canopy_incorp_preset, Midcen) %>% 
+   mutate(intersect_area = st_area(.)) %>%   # create new column with shape area
+   dplyr::select(FIPS, intersect_area) %>%   # only select columns needed to merge
+   mutate(intArea = as.numeric(intersect_area)) %>%  
+   st_drop_geometry() %>%   # drop geometry as we don't need it
+   group_by(FIPS) %>% #Dissolve tracts that cover several munis into single value with added areas
+   summarize(midcenArea=sum(intArea))
+  
+
+# Merge by FIPS
+df<- census_canopy_incorp_preset %>% left_join(.,intersect_pct, by = 'FIPS') %>% 
+  mutate(Prct1940 = midcenArea/(AreaHa*10000)) %>% 
+  dplyr::select(-midcenArea) %>% #Drop preset area
+  mutate(Prct1940=replace_na(Prct1940,0)) #turn NA into zero
+
+#Commenting the write out for knitting.
+#st_write(df, 'originData1.shp',driver = 'ESRI shapefile')
+
+```
+## 1940 data
+
+Pull in, clean and apply forest cover to 1940 census layer
+
+```{r}
+
+#Load data from NHGIS and clean it up https://www.nhgis.org/
+
+census1940 <- read.csv('1940/1940Tract.csv') %>%
+
+  rename(White1940 = `BUQ001`, #rename variables to something meaningful
+         NotWhite1940 = `BUQ002`,
+         MedianHomeValue1940 =`BVC001`) %>% 
+  
+  mutate( NoSchool1940 = (`BUH001`+ `BUH010`), #Combine schooling categories. 
+                #They were previously separated by gender and lots of buckets.
+          NoHighSchool1940 = (`BUH002`+ `BUH003`+`BUH004`+ 
+                                `BUH011` + `BUH012`+ `BUH013`),
+          HighSchool1940 = (`BUH005` + `BUH006`+ `BUH014`+ `BUH015`),
+          College1940 = (`BUH007` + `BUH008`+ `BUH016` + `BUH017`)) %>%
+  
+  dplyr::select(GISJOIN,
+         White1940, #Drop the unneeded columns
+         NotWhite1940,
+         MedianHomeValue1940,
+         NoSchool1940,
+         NoHighSchool1940,
+         HighSchool1940,
+         College1940)
+
+#Get rent data from NHGIS
+censusRent<-read.csv('1940/1940TractRent.csv') %>% 
+        rename(MedRent1940 = `BVF001`) %>% 
+        dplyr::select(GISJOIN,
+               MedRent1940)
+
+#Load spatial data
+
+spatial<-st_read('1940/US_tract_1940_conflated.shp')
+
+#Join the layers and final cleanup.
+census1940 <- left_join(census1940, censusRent, by = 'GISJOIN') %>% 
+  left_join(spatial, ., by = 'GISJOIN') %>% #Join census data to spatial
+  filter(STATE == '17', 
+         COUNTY == '031') %>% #filter for Chicago region
+  dplyr::select(.,-c(1:3,5:16)) %>%  #drop extra columns
+  mutate(tractArea = st_area(.)) %>% 
+  sf::st_transform(., crs = 5070)
+
+#calculate 1940 forest cover
+
+intersect_pct <- st_intersection(census1940, Midcen) %>%
+   mutate(intersect_area = st_area(.)) %>%  # create new column with shape area
+   dplyr::select(GISJOIN, intersect_area)%>%#only select columns needed to merge
+   mutate(intArea = as.numeric(intersect_area)) %>%  
+   st_drop_geometry() %>%   # drop geometry as we don't need it
+   group_by(GISJOIN) %>% #Dissolve tracts 
+   summarize(midcenArea=sum(intArea))
+  
+
+# Merge by 
+df1940<- census1940 %>% left_join(.,intersect_pct, by = 'GISJOIN') %>% 
+  mutate(Prct1940 = midcenArea/(tractArea)) %>% 
+  dplyr::select(-midcenArea,
+                -tractArea) %>% #Drop some fields
+  mutate(Prct1940=replace_na(Prct1940,0)) #turn NA into zero
+
+
+#Write the file, but commenting out for knitting
+#st_write(df1940,'1940/df1940.shp', driver = 'ESRI Shapefile')
+
+```
+
+## Data exploration
+
+You can start the analysis from this point. Everything in the above data collection and cleaning section is loaded in fresh.
+
+```{r}
+#Load in the data
+
+#Note, you could have this read the output from the previous section, but I'm
+#loading it from my hard drive so that I can run this separately.
+
+df <- st_read('originData1.shp') 
+df1940 <- st_read('1940/df1940.shp')
+
+# We are focusing on incorporated areas for this study, so we'll filter for that
+#first
+dfincorp<-df %>% filter(pctIncorp>.75) %>% 
+  dplyr::select(-Pcan2010_1) #get rid of extraneous column
+
+#Simple model to test if income and canopy are correlated
+canopyincome<-glm(data = dfincorp, PCan2010~Med_ncm, family = Gamma)
+
+summary(canopyincome)#Highly significant relationship
+
+par(mfcol=c(2,2))
+plot(canopyincome)
+
+#Looks reasonable, though data are likely overdispersed.
+
+par(mfcol=c(1,1))
+ggplot(data=dfincorp, aes(x=Med_ncm, y = PCan2010)) + 
+   xlab('Median household income (USD)') +
+   ylab('Percent tree canopy') +
+   scale_x_continuous(labels = comma) +
+   geom_point(color = '#6baa35') +
+   geom_smooth(method = 'lm', color ='#415c57') +
+   stat_regline_equation(label.y = .80, aes(label = ..eq.label..)) +
+   stat_regline_equation(label.y = .75, aes(label = ..rr.label..)) #+
+   #theme(plot.background = element_rect(fill = "#FDF7F1"))
+#Add the last theme for off-white background
+
+#Now, let's see how pre-settlement ecosystems compare to current income.
+
+presetincome<-glm(data = dfincorp, presetPrct~Med_ncm)
+
+summary(presetincome) #Highly significant relationships
+
+par(mfcol=c(2,2))
+plot(presetincome) #really terrible fit. 
+
+par(mfcol=c(1,1))
+hist(dfincorp$presetPrct, 
+     xlab = 'Percent forested in 1830',
+     main = "Histogram of presettlement forest percentage")
+
+#Too many 0 and 1s. Not a normal distribution. LM a terrible fit.
+
+#Still, let's look at the linear regression
+ggplot(data=dfincorp, aes(x=Med_ncm, y = presetPrct)) + 
+   xlab('Median household income (USD)') +
+   ylab('Proportion pre-settlement forested ecosystems') +
+   scale_x_continuous(labels = comma) +
+   geom_point(color = '#6baa35') +
+   geom_smooth(method = 'lm', color ='#415c57') +
+   stat_regline_equation(label.y = 1.1, aes(label = ..eq.label..)) +
+   stat_regline_equation(label.y = 1.05, aes(label = ..rr.label..))
+
+#Sure, there's a positive correlation but it's a mess.
+
+#Violin plot of three time period canopy
+
+vioplot<-st_drop_geometry(dfincorp) %>% 
+  dplyr::select('presetPrct','Prct1940','PCan2010') %>% 
+  rename('1840' = 'presetPrct',
+         '1940' = 'Prct1940',
+         '2010' = 'PCan2010') %>% 
+  vioplot(., ylab = 'Percent canopy/forested', 
+          xlab= "Time period", 
+          col ='#415c57')
+
+#This is pretty hard to interpret since the data come from different
+#sampling methods. Probably not a great way to explore these data
+
+
+#Many census variables are correlated. Let's investigate that here.
+
+#There are far too many fields to investigate with a pairs panel. Let's
+#remove all but the most essential.
+censusCheck<- dfincorp %>% 
+   filter(pctIncorp>.75) %>% 
+  dplyr::select(-FIPS, -AreaHa,-WhtPopP,-BlkPopP,-AsnPopP, -OthPopP, -OwnerP,
+                -RenterP,-PCan2010,-pctIncorp,-presetPrct,-Prct1940) %>% 
+  st_drop_geometry() 
+
+pairs.panels(censusCheck)
+
+#Many of the variables have non-normal distributions and outliers.
+#This may need to be addressed in model fitting
+
+#Let's investigate tracts where forests have or have not grown
+
+#Higher than median now, none in preset
+NewGrowth<-dfincorp %>% 
+  filter(PCan2010>=0.22513,
+         presetPrct == 0) %>% 
+  dplyr::select(FIPS) %>% 
+  st_drop_geometry() %>% 
+  mutate(growth = 'Y')
+
+#Lower than median now, none in preset
+NoGrowth<-dfincorp %>% 
+    filter(PCan2010<=0.22513,
+         presetPrct == 0)%>% 
+  dplyr::select(FIPS) %>% 
+  st_drop_geometry() %>% 
+  mutate(growth = 'N')
+
+#Bind together
+GrowthTab<-rbind(NewGrowth, NoGrowth)
+
+#Join back to dataset
+Growth<- dfincorp %>% 
+  left_join(.,GrowthTab) %>% 
+  na.omit(.)
+
+mu <- plyr::ddply(Growth, "growth", summarise, grp.mean=mean(Med_ncm))
+
+  ggplot(Growth, aes(x=Med_ncm, fill=growth)) +
+    geom_histogram(aes(color = growth, fill=growth), 
+                   alpha=0.6, position = 'identity') +
+  scale_color_manual(values = c("#6baa35", "#415c57"),
+                    name = 'Changes in canopy extent',
+                    labels = c('Lower than median canopy', 
+                               'Higher than median canopy')) +
+  scale_fill_manual(values = c("#6baa35", "#415c57"),
+                    name = 'Changes in canopy extent',
+                    labels = c('Lower than median canopy', 
+                               'Higher than median canopy'))  +
+  geom_vline(data=mu, aes(xintercept=grp.mean, color=growth),
+             linetype="dashed") +
+    xlab('Median income in 2015 (USD)') +
+           ylab('Count of census tracts') +
+   scale_x_continuous(label=dollar_format()) +
+  theme(legend.position = c(.8,.8))
+  
+#Now, areas that had canopy and wealth
+
+Forested<-dfincorp %>% 
+  mutate(Forested = ifelse(presetPrct>=.25,'Y',
+                           ifelse(presetPrct==0,'N',NA))) %>% 
+  na.omit()
+
+mu <- plyr::ddply(Forested, "Forested", summarise, grp.mean=mean(Med_ncm))
+  
+ggplot(Forested, aes(x=Med_ncm, fill=Forested)) +
+    geom_histogram(aes(color = Forested, fill=Forested), 
+                   alpha=0.6, position = 'identity') +
+  scale_color_manual(values = c("#6baa35", "#415c57"),
+                    name = 'Presettlment forest cover',
+                    labels = c('0%', 'Greater than 25%')) +
+  scale_fill_manual(values = c("#6baa35", "#415c57"),
+                    name = 'Presettlment forest cover',
+                    labels = c('0%', 'Greater than 25%')) +
+  geom_vline(data=mu, aes(xintercept=grp.mean, color=Forested),
+             linetype="dashed") +
+    xlab('Median income in 2015 (USD)') +
+           ylab('Count of census tracts') +
+   scale_x_continuous(label=dollar_format()) +
+  theme(legend.position = c(.8,.8))
+
+
+
+#Plot canopy data
+
+par(mfcol=c(2,1))
+ggplot(data=df) +geom_sf(aes(fill=presetPrct), color = NA) +
+  coord_sf(crs= "+init=epsg:3435") #It's a start, but I'd like to flip the 
+#canopy gradient and change some colors.
+
+ggplot(data=df) +geom_sf(aes(fill=PCan2010), color = NA) +
+  coord_sf(crs= "+init=epsg:3435") #It's a start, but I'd like to flip the 
+#canopy gradient and change some colors.
+
+
+```
+
+## Linear models
+
+```{r}
+
+dfincorp%<>%st_drop_geometry
+
+df2<- dfincorp %>% 
+  dplyr::filter(FIPS!= '17031030702') %>% #An outlier
+  dplyr::select(-FIPS, -pctIncorp, -AreaHa) %>% 
+  na.omit()  #Without this the step model won't work
+
+
+#LM
+mod1 <- lm(data=df2[,-18], PCan2010~.)
+
+summary(mod1) #Lot's of significant predictors
+
+par(mfcol=c(2,2))
+plot(mod1) 
+# There are some outliers that are severely affecting the model
+# qq plot looks good though.
+
+
+#Try variable selection
+
+mod2 <- step(mod1, direction = 'both',trace = FALSE)
+
+#Dropped median rent and black pop density
+
+summary(mod2)
+plot(mod2)
+
+anova(mod1,mod2)
+
+AIC(mod1)
+AIC(mod2)
+
+#The stepwise model did not improve the AIC.
+
+#Upon further reading, stepwise models are not particularly rigorous
+#On to Ridge and Lasso.
+
+```
+Let's see how the linear models do at prediction.
+
+##Linear prediction
+
+```{r}
+#I am creating five folds that I will run to check the average RMSE.
+
+#First, create the folds
+
+set.seed(12) #Make it reproducible
+folds<-10 #Put ten folds in the data
+# assign folds
+df2$fold <- sample(x=1:folds,size=nrow(df2),replace=T) 
+
+#Now, make a loop to run all of the folds
+
+#Create a data frame to store the results
+result <- data.frame(matrix(nrow = 10, ncol = 7))
+colnames(result) <- c("Fold", "lmIS", "lmOS", "r2", "stepIS", "stepOS", "r2")
+
+#Now, make the loop
+
+for(i in 1:10){
+  #Selects everything except fold i
+  df.train <- df2 %>% filter(fold != i) %>% dplyr::select(-fold)
+    #Selects fold i
+  df.test  <- df2 %>% filter(fold == i) %>% dplyr::select(-fold)
+  #Build the linear model
+  lm1<-lm(data=df.train, PCan2010~. )
+  #Predict test data
+  lm1.pred.IS <- predict(lm1, newdata=df.train) 
+  #Calculate RMSE
+  InSamp<- sqrt(mean((lm1.pred.IS-df.train$PCan2010)^2)) 
+  #Repeat the above two steps with OS data
+  lm1.pred.OS <- predict(lm1, newdata=df.test) 
+  OutSamp <- sqrt(mean((lm1.pred.OS-df.test$PCan2010)^2))
+  #Print the results to our blank data frame
+  result[i,1] <- i        
+  result[i,2] <- InSamp
+  result[i,3] <- OutSamp
+  result[i,4] <- cor(lm1.pred.OS,df.test$PCan2010)
+  # Create step model
+  step1<-step(lm1, trace = FALSE)
+  #Predict test data
+  step1.pred.IS <- predict(step1, newdata=df.train) 
+  #Calculate RMSE
+  InSamp2<- sqrt(mean((step1.pred.IS-df.train$PCan2010)^2)) 
+  #Repeat the above two steps with OS data
+  step1.pred.OS <- predict(step1, newdata=df.test) 
+  OutSamp2 <- sqrt(mean((step1.pred.OS-df.test$PCan2010)^2))
+  #Print the results to our blank data frame
+  result[i,5] <- InSamp2
+  result[i,6] <- OutSamp2
+  result[i,7] <- cor(step1.pred.OS,df.test$PCan2010)
+}
+
+#Getting errors about rank-deficient fits. Need to do variable reduction.
+
+RMSE<-colMeans(result) #Calculate mean RMSE
+
+RMSE
+
+#Null model predictions
+
+#In sample
+NullTrain<-sqrt(mean((mean(df2$PCan2010)-df.train$PCan2010)^2))
+
+#Out of sample
+NullTest<-sqrt(mean((mean(df2$PCan2010)-df.test$PCan2010)^2))
+
+#Null improvement
+
+abs(RMSE - NullTrain)/NullTrain
+abs(RMSE - NullTest)/NullTest
+```
+##Ridge and lasso
+
+```{r}
+
+
+#First, create test and train datasets that are matrices for glmnet. Also make
+#The dependent variable test and train.
+
+#filter out one fold for test data, turn it into a matrix for glmnet, and
+#Remove the dependent variable and fold number
+
+set.seed(45)
+  x.train1 <- df2 %>% filter(fold != 1) %>% as.matrix()
+  x.train <- x.train1[,-c(15,18)]
+  #Selects out the dependent variable
+  y.train <- df2%>% filter(fold != 1)
+  y.train <- y.train$PCan2010
+#Do the same for the test data
+  x.test1 <- df2 %>% filter(fold == 1) %>% as.matrix()
+  x.test <- x.test1[,-c(15,18)]
+  y.testfold <- df2%>% filter(fold == 1) 
+  y.test <- y.testfold$PCan2010 
+
+#Now set a few lambdas to test
+lambdas <- 10^seq(2, -3, by = -.1)
+
+#And the ridge regression with a cv to identify the optimal lambda
+cv.ridge <- cv.glmnet(x.train, y.train, nlambda = 25, alpha = 0, 
+                   family = 'gaussian', lambda = lambdas)
+
+opt.lambda <- cv.ridge$lambda.min
+opt.lambda #Optimal lambda is 0.001
+
+ridge <- glmnet(x.train, y.train, nlambda = 25, alpha = 0, 
+                   family = 'gaussian', lambda = 2.51)
+
+p<-predict(ridge, newx=x.test, s =  opt.lambda)
+cor(p,y.test)
+#Now let's setup lasso
+
+#We can use the same training data and lambdas from above, so straight to the 
+#cross validation to find the best lambda.
+
+lasso <- cv.glmnet(x.train, y.train, alpha = 1, lambda = lambdas, 
+                   standardize = TRUE, nfolds = 5)
+
+best.lambda <- lasso$lambda.min
+best.lambda #Optimal lambda is 0.001
+
+lasso.mod <- glmnet(x.train, y.train, alpha = 1, 
+                    lambda = best.lambda, family= 'gaussian')
+
+#Now we'll test predictions of in and out of sample data
+#Create a data frame to store the results
+result2 <- data.frame(matrix(nrow = 10, ncol = 7))
+colnames(result2) <- c("Fold", "RidgeIS", "RidgeOS", "r2", 
+                       "LassoIS", "LassoOS", "r2")
+
+for(i in 1:10){
+  #Selects everything except fold i
+  x.train1 <- df2 %>% filter(fold != i) %>% as.matrix()
+  x.train <- x.train1[,-c(15,18)]
+  #Selects out the dependent variable
+  y.train <- df2%>% filter(fold != i)
+  y.train <- y.train$PCan2010
+#Do the same for the test data
+  x.test1 <- df2 %>% filter(fold == i) %>% as.matrix()
+  x.test <- x.test1[,-c(15,18)]
+  y.testfold <- df2%>% filter(fold == i) 
+  y.test <- y.testfold$PCan2010 
+  #Build the model
+  ridge <- glmnet(x.train, y.train, alpha = 0, 
+                   family = 'gaussian', lambda = opt.lambda)
+  #Predict test data
+  ridge.pred.IS <- predict(ridge, newx=x.train, s =  opt.lambda) 
+  #Calculate RMSE,
+  InSamp<- sqrt(mean((ridge.pred.IS-y.train)^2)) 
+  #Repeat the above two steps with OS data
+  ridge.pred.OS <- predict(ridge, newx=x.test, s =  opt.lambda) 
+  OutSamp <- sqrt(mean((ridge.pred.OS-y.test)^2))
+  #Print the results to our blank data frame
+  result2[i,1] <- i        
+  result2[i,2] <- InSamp
+  result2[i,3] <- OutSamp
+  result2[i,4] <- cor(ridge.pred.OS,y.test)
+  
+  # Create step model
+  lasso.mod <- glmnet(x.train, y.train, alpha = 1, 
+                    lambda = best.lambda, family = 'gaussian')
+  #Predict test data
+  lasso.pred.IS <- predict(lasso.mod, newx=x.train, s =  best.lambda) 
+  #Calculate RMSE
+  InSamp2<- sqrt(mean((lasso.pred.IS-y.train)^2)) 
+  #Repeat the above two steps with OS data
+  lasso.pred.OS <- predict(lasso.mod, newx=x.test, s =  best.lambda) 
+  OutSamp2 <- sqrt(mean((lasso.pred.OS-y.test)^2))
+  #Print the results to our blank data frame
+  result2[i,5] <- InSamp2
+  result2[i,6] <- OutSamp2 
+  result2[i,7] <- cor(lasso.pred.OS,y.test)
+
+}
+
+RMSE2 <- colMeans(result2) #View results
+
+RMSE2
+
+#Percent improvement
+abs(RMSE2 - NullTrain)/NullTrain
+abs(RMSE2 - NullTest)/NullTest
+
+```
+##GAM
+```{r}
+
+gam<-gam::gam(PCan2010~., data = df.train)
+
+summary(gam)
+
+#Let's refine a GAM with a subset of the variables and spline numbers
+
+gam2<-gam::gam(PCan2010~Med_ncm+Prct1940+OwnerP+House_age, data = df.train)
+
+scope_list = list(
+  "Med_ncm" = ~1 + Med_ncm + s(Med_ncm, df=2) + 
+    s(Med_ncm, df=3) + s(Med_ncm, df =4) + s(Med_ncm, df=5),
+  "Prct1940" = ~1 + Prct1940 + s(Prct1940, df=2) + s(Prct1940, df=3) + 
+    s(Prct1940, df =4) + s(Prct1940, df=5),
+  "OwnerP" = ~1 + OwnerP + s(OwnerP, df=2) + s(OwnerP, df=3) + s(OwnerP, df=4) + 
+    s(OwnerP, df=5),
+  "House_age" = ~1 + House_age + s(House_age, df=2) + s(House_age, df=3) + 
+    s(House_age, df=4) + s(House_age, df=5))
+
+gam.step<-step.Gam(gam2, scope = scope_list, direction = 'both', trace = T) 
+
+summary(gam.step)
+
+plot(gam.step)
+
+#Create a data frame to store the results
+result3 <- data.frame(matrix(nrow = 5, ncol = 4))
+colnames(result3) <- c("Fold", "GAMIS", "GAMOS", "r2")
+
+#Now, make the loop
+
+for(i in 1:5){
+  #Selects everything except fold i
+  df.train <- df2 %>% filter(fold != i)
+  #Selects fold i
+  df.test  <- df2 %>% filter(fold == i)
+  #Build the GAM model
+  gam.step<-step.Gam(gam2, scope = scope_list, direction = 'both', trace = F) 
+  #Predict test data
+  gam.pred.IS <- predict(gam.step, newdata=df.train) 
+  #Calculate RMSE
+  InSamp<- sqrt(mean((gam.pred.IS-df.train$PCan2010)^2)) 
+  #Repeat the above two steps with OS data
+  gam.pred.OS <- predict(gam.step, newdata=df.test) 
+  OutSamp <- sqrt(mean((gam.pred.OS-df.test$PCan2010)^2))
+  #Print the results to our blank data frame
+  result3[i,1] <- i        
+  result3[i,2] <- InSamp
+  result3[i,3] <- OutSamp
+  result3[i,4] <- cor(gam.pred.OS, df.test$PCan2010)}
+
+RMSE3<-colMeans(result3)
+
+RMSE3
+
+#Calculate null improvement
+abs(RMSE3 - NullTrain)/NullTrain
+abs(RMSE3 - NullTest)/NullTest
+
+#GAM performed slightly worse than the linear models.
+
+```
+
+
+## Classification tree
+```{r}
+
+tree1<-rpart(PCan2010~., data=df2[,-18])
+rpart.plot(tree1)
+
+#Cross validation for this tree is in the random forest section.
+
+```
+
+## Random forest
+
+```{r}
+
+#Canopy and all variables
+
+rando<-randomForest(PCan2010~., data=df2[,-c(18)])
+
+  #Visualize importance
+vip(rando, horizontal = TRUE, 
+    aesthetics = list(fill = '#415c57'))
+
+#First, create a data frame to store the results
+result4 <- data.frame(matrix(nrow = 5, ncol = 7))
+colnames(result4) <- c("Fold", "RPARTIS", "RPARTOS", "r2", "RfIS", "RfOS", "r2")
+
+for(i in 1:10){
+   #Selects everything except fold i
+  df.train <- df2 %>% filter(fold != i) %>% dplyr::select(-fold)
+  # selects fold i
+  df.test  <- df2 %>% filter(fold == i) %>% dplyr::select(-fold)
+  #Create tree
+  tree1<-rpart(PCan2010~., data=df.train[,-18])
+  #IS data tree
+  tree1.pred.IS <- predict(tree1, newdata=df.train) 
+  #RMSE since it's not categorical
+  InSamp<- sqrt(mean((tree1.pred.IS-df.train$PCan2010)^2)) 
+  #Repeat the above three steps with OS data
+  tree1.pred.OS <- predict(tree1, newdata=df.test) 
+  OutSamp <- sqrt(mean((tree1.pred.OS-df.test$PCan2010)^2))
+  #Print the results to our blank data frame
+  result4[i,1] <- i        
+  result4[i,2] <- InSamp
+  result4[i,3] <- OutSamp
+  result4[i,4] <- cor(tree1.pred.OS,df.test$PCan2010)
+  # Create the random forest tree
+  rando <- randomForest(PCan2010~., data=df.train[,-c(18)])
+  #IS data tree
+  tree2.pred.IS <- predict(rando, newdata=df.train) 
+  #RMSE since it's not categorical
+  InSamp2<- sqrt(mean((tree2.pred.IS-df.train$PCan2010)^2)) 
+  #Repeat the above three steps with OS data
+  tree2.pred.OS <- predict(rando, newdata=df.test) 
+  OutSamp2 <- sqrt(mean((tree2.pred.OS-df.test$PCan2010)^2))
+  result4[i,5] <- InSamp2
+  result4[i,6] <- OutSamp2
+  result4[i,7] <- cor(tree2.pred.OS,df.test$PCan2010)
+}
+
+RMSE4<-colMeans(result4)
+
+RMSE4
+
+abs(RMSE4 - NullTrain)/NullTrain
+abs(RMSE4 - NullTest)/NullTest
+
+```
+##SVM
+
+```{r}
+
+svm <- svm(data=df2,PCan2010~.)
+
+summary(svm)
+
+#Create a data frame to store the results
+result5 <- data.frame(matrix(nrow = 5, ncol = 4))
+colnames(result5) <- c("Fold", "SVMIS", "SVMOS", "r2")
+
+#Now, make the loop
+
+for(i in 1:5){
+  #Selects everything except fold i
+  df.train <- df2 %>% filter(fold != i)
+  #Selects fold i
+  df.test  <- df2 %>% filter(fold == i)
+  #Build the GAM model
+  svm <- svm(data=df2,PCan2010~.) 
+  #Predict test data
+  svm.pred.IS <- predict(svm, newdata=df.train) 
+  #Calculate RMSE
+  InSamp<- sqrt(mean((svm.pred.IS-df.train$PCan2010)^2)) 
+  #Repeat the above two steps with OS data
+  svm.pred.OS <- predict(svm, newdata=df.test) 
+  OutSamp <- sqrt(mean((svm.pred.OS-df.test$PCan2010)^2))
+  #Print the results to our blank data frame
+  result5[i,1] <- i        
+  result5[i,2] <- InSamp
+  result5[i,3] <- OutSamp
+  result5[i,4] <- cor(svm.pred.OS, df.test$PCan2010)}
+
+RMSE5<-colMeans(result5)
+
+RMSE5
+
+#Calculate null improvement
+abs(RMSE5 - NullTrain)/NullTrain
+abs(RMSE5 - NullTest)/NullTest
+
+```
+
+
+The random forest model performed better than other models in both IS and OS predictions. The results are also interesting. Presence of 1940 canopy is the most impactful pedictor, followed by home ownership, housing age, and income. 
+
+Let's explore this model further for our final inferencing and discussion.
+
+##Final model exploration
+
+```{r}
+
+#QQ plot for random forest 1 
+plotres(rando, which = 4)
+
+#PDP values for random forest 1
+Owner <- partial(rando, pred.var = 'OwnerP')
+Pct1940 <- partial(rando, pred.var = 'Prct1940')
+HouseAge <- partial(rando, pred.var = 'House_age')
+Med_ncm <- partial(rando, pred.var = 'Med_ncm')
+
+#Plot them side by side
+par(mfcol=c(1,3))
+plot(Pct1940, xlab = 'Percent 1940 forest', ylab = 'Partial dependence')
+plot(Owner, xlab = 'Percent owner-occupied homes', ylab = 'Partial dependence')
+plot(HouseAge, xlab = 'Median house age', ylab = 'Partial dependence')
+
+#Predicted vs. actual chart
+
+#Bind the predicted and actual valeus and turn them into a data frame
+PredAct<-cbind(tree2.pred.OS,y.test) %>% 
+  as.data.frame(.)
+
+#Plot them
+par(mfcol=c(1,1))
+ggplot(data=PredAct, aes(x=y.test, y = tree2.pred.OS)) + 
+   xlab('Actual values') +
+   ylab('Predicted values') +
+   scale_x_continuous(labels = comma) +
+   geom_point(color = '#6baa35') +
+   geom_smooth(method = 'lm', color ='#415c57') 
+
+#Let's see what happened in the areas that were forested in preset era
+
+forested<-df2 %>% filter(presetPrct >= 0.5)
+
+rando2<-randomForest(PCan2010~., data=forested[,-c(16,17,18)])
+
+vip(rando2, horizontal = TRUE, 
+    aesthetics = list(fill = '#415c57'))
+    
+varImpPlot(rando2, type=2)
+
+#QQ plot for random forest 1 
+plotres(rando2, which = 4)
+
+#PDP values for random forest 1
+Owner <- partial(rando2, pred.var = 'OwnerP')
+HouseDe <- partial(rando2, pred.var = 'HouseD')
+Poverty <- partial(rando2, pred.var = 'PovP')
+Med_ncm <- partial(rando, pred.var = 'Med_ncm')
+
+#Plot them side by side
+par(mfcol=c(1,3))
+plot(Owner, xlab = 'Percent owner-occupied homes', ylab = 'Partial dependence')
+plot(HouseDe, xlab = 'Housing density', ylab = 'Partial dependence')
+plot(Poverty, xlab = 'Percent poverty', ylab = 'Partial dependence')
+
+#And the areas that didn't have presettlement canopy
+
+Noforested<-df2 %>% filter(presetPrct <= 0)
+
+rando3<-randomForest(PCan2010~., data=Noforested[,-c(16,17,18)])
+
+vip(rando3, horizontal = TRUE, 
+    aesthetics = list(fill = '#415c57'))
+
+#Finally, areas that have and have not seen growth
+
+Growth %<>%
+  st_drop_geometry() %>%   
+  dplyr::filter(growth == 'Y', #only areas with growth
+                FIPS!= '17031030702') %>% #An outlier
+  dplyr::select(-FIPS, -pctIncorp, -AreaHa, -Prct1940, -growth, -presetPrct) %>% 
+  na.omit()  #Without this the step model won't work
+  
+
+rando6<-randomForest(PCan2010~., data=Growth[,-18])
+
+vip(rando6, horizontal = TRUE, 
+    aesthetics = list(fill = '#415c57'))
+
+#QQ plot for growth forest
+
+plotres(rando6, which = 4)
+
+#PDP values for growth forest
+Owner <- partial(rando6, pred.var = 'OwnerP')
+Med_ncm <- partial(rando6, pred.var = 'Med_ncm')
+Poverty <- partial(rando6, pred.var = 'PovP')
+
+#Plot them side by side
+par(mfcol=c(1,3))
+plot(Owner, xlab = 'Percent owner-occupied homes', ylab = 'Partial dependence')
+plot(Med_ncm, xlab = 'Median income', ylab = 'Partial dependence')
+plot(Poverty, xlab = 'Percent poverty', ylab = 'Partial dependence')
+
+save(list=ls(all=T),file='ChicagoForestOriginFinal_0430.RData') 
+
+```
+
