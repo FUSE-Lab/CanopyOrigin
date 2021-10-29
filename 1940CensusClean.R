@@ -5,8 +5,7 @@
 #Load libraries
 
 library(tidyverse)
-library(magrittr)
-library(dplyr)
+library(tidylog)
 
 #Set WD
 setwd("D:/Dropbox/Forest Composition/composition/Maps/shapefiles/Origin")
@@ -27,12 +26,10 @@ censusAll <- left_join(census1, census2, by = "GISJOIN") %>%
          NotWhite40T = `BUQ002`,
          MedHomeVal40T =`BVC001`,
          MedRent40T = `BVF001`) %>% 
-  
   mutate( NoSchool40T = (`BUH001`+ `BUH010`), #Combine schooling categories. They were previously separated by gender and lots of buckets.
           NoHighSchool40T = (`BUH002`+ `BUH003`+`BUH004`+ `BUH011` + `BUH012`+ `BUH013`),
           HighSchool40T = (`BUH005` + `BUH006`+ `BUH014`+ `BUH015`),
           College40T = (`BUH007` + `BUH008`+ `BUH016` + `BUH017`)) %>%
-  
   dplyr::select(GISJOIN,
                 White40T, #Drop the unneeded columns
                 NotWhite40T,
@@ -41,7 +38,14 @@ censusAll <- left_join(census1, census2, by = "GISJOIN") %>%
                 NoSchool40T,
                 NoHighSchool40T,
                 HighSchool40T,
-                College40T)
+                College40T) %>% 
+  mutate(TotPop40T = `White40T` + `NotWhite40T`,
+         PWhite40T = `White40T`/`TotPop40T`,
+         PNotWhite40T = `NotWhite40T`/`TotPop40T`,
+         PNoSchool40T = `NoSchool40T`/`TotPop40T`,
+         PNoHighSchool40T = `NoHighSchool40T`/`TotPop40T`,
+         PHighSchool40T = `HighSchool40T`/`TotPop40T`,
+         PCollege40T = `College40T`/`TotPop40T`)
 head(censusAll)
 
 write.csv(censusAll, 'DataStandardized/Census1940Tract.csv')
