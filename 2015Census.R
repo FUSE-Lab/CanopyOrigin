@@ -36,10 +36,10 @@ census<- get_acs(geography = geom,
                county = CNTY,
                year = YR,
                output = 'wide',
-               geometry = TRUE)%>% #That pulls in tigerlines
+               geometry = TRUE) %>% #That pulls in tigerlines
   sf::st_transform(., crs = 5070) #Change to albers equal conic
 
-census$AreaHa <-st_area(census) %>% #Add area and covert until to ha
+census$AreaHa <-st_area(census) %>% #Add area and convert to ha
   units::set_units(value = ha)
 
 #Rename, select, and modify variables
@@ -77,23 +77,24 @@ census %<>%
          Tot_pop,
          AreaHa) %>% 
   mutate(Med_ncm = ifelse(is.na(Med_ncm), 0, Med_ncm)) %>% #Change NA income to zeros
-  mutate(WhtPopD = (Wht_pop/AreaHa), #Change some variables to density
-         BlkPopD = (Blk_pop/AreaHa),
-         AsnPopD = (Asn_pop/AreaHa),
-         OthPopD = (Other_pop/AreaHa),
-         UnivD = (College_ed/AreaHa),
-         PovD = (Below_poverty/AreaHa),
-         UnplydD = (Unemployed_pop/AreaHa),
+  mutate(WhtPopP = (Wht_pop/(Tot_pop +0.000001)), #Change some variables to percent
+         BlkPopP = (Blk_pop/(Tot_pop +0.000001)),
+         AsnPopP = (Asn_pop/(Tot_pop +0.000001)),
+         OthPopP = (Other_pop/(Tot_pop+0.000001)),
+         UnivP = (College_ed/(Tot_pop+0.000001)),
+         PovP = (Below_poverty/(Tot_pop+0.000001)),
+         UnplydP = (Unemployed_pop/(Tot_pop+0.000001)),
          HouseD = (Housing_unit/AreaHa),
-         OwnerD = (Owner_house/AreaHa),
-         RenterD = (Renter_house/AreaHa),
-         TotPopD = (Tot_pop/AreaHa))
+         OwnerP = (Owner_house/(Housing_unit+0.000001)),
+         RenterP = (Renter_house/(Housing_unit+0.000001)),
+         TotPopD = (Tot_pop/AreaHa),
+         HouseD = (Housing_unit/AreaHa)) 
 
 #Write it up
-st_write(census, file.path('2015/2015Clean.shp'), driver = 'ESRI Shapefile', overwrite = TRUE)
+st_write(census, file.path('2015Clean1.shp'), driver = 'ESRI Shapefile', append = TRUE)
 
 
-#Get project area----------------------------------------------
+#Get project area----------------------------------------
 
 censusCounty<- get_acs(geography = 'county',
                      variables = 'B01003_001',
