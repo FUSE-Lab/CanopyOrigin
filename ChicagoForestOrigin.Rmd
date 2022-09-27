@@ -16,6 +16,7 @@ Load in useful libraries
 
 library(plyr)
 library(tidyverse)
+library(magrittr)
 library(ggthemes)      #More image prettiness
 library(sf)            #Spatial data
 library(tidycensus)    #Pull census data
@@ -23,7 +24,8 @@ library(raster)        #Spatial raster datasets
 library(exactextractr) #clip polygons
 library(ggmap)         #Visualize maps
 library(scales)        #Change scales on figures
-library(psych)         #Fancier pairs panel
+library(GGally)        #Fancier pairs panel
+library(psych)         #Corr plot
 library(ggpubr)        #Change axes on figures
 library(vioplot)       #Violin plots
 library(glmnet)        #For lasso and ridge
@@ -50,6 +52,8 @@ Pull census data. Note, you will need to provide and API key. I have removed min
 #census_api_key(key = "API key here", install=T, overwrite = TRUE)
 
 # Set up variable, scale and year choices
+
+#new edit
 
 geom <- 'tract'
 YR <- 2015
@@ -420,6 +424,16 @@ ggplot(data=dfincorp, aes(x=Med_ncm, y = presetPrct)) +
 
 #Sure, there's a positive correlation but it's a mess.
 
+#Presettlement and current.
+ggplot(data=dfincorp, aes(x=Prct1940, y = presetPrct)) +
+   xlab('Proportion forests in 1940') +
+   ylab('Proportion pre-settlement forested ecosystems') +
+   geom_point(color = '#6baa35') +
+   geom_smooth(method = 'lm', color ='#415c57') +
+   stat_regline_equation(label.y = 1.1, aes(label = ..eq.label..)) +
+   stat_regline_equation(label.y = 1.05, aes(label = ..rr.label..)) +
+   ylim(c(0,1.2))
+
 #How about canopy and housing age?
 
 ggplot(data=dfincorp, aes(x=House_age, y = PCan2010)) + 
@@ -453,7 +467,7 @@ vioplot<-st_drop_geometry(dfincorp) %>%
 censusCheck<- dfincorp %>% 
    filter(pctIncorp>.75) %>% 
   dplyr::select(-FIPS, -AreaHa,-WhtPopP,-BlkPopP,-AsnPopP, -OthPopP, -OwnerP,
-                -RenterP,-PCan2010,-pctIncorp,-presetPrct,-Prct1940) %>% 
+                -RenterP,-PCan2010,-pctIncorp,-presetPrct,-Prct1940) #%>% 
   st_drop_geometry() 
 
 pairs.panels(censusCheck)
@@ -893,7 +907,7 @@ rpart.plot(tree1)
 
 #Canopy and all variables
 
-rando<-randomForest(PCan2010~., data=df2[,-c(18)])
+rando<-randomForest(PCan2010~., data=df2[,c(vf$varselect.pred)])
 
   #Visualize importance
 vip(rando, horizontal = TRUE, 
@@ -944,6 +958,11 @@ RMSE4
 
 abs(RMSE4 - NullTrain)/NullTrain
 abs(RMSE4 - NullTest)/NullTest
+
+vf <- VSURF(PCan2010 ~ ., data = df2, na.action = na.omit)
+
+summary(vf)
+
 
 ```
 ##SVM
